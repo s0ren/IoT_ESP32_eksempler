@@ -1,0 +1,118 @@
+// ESP32 WiFi Setup Portal (AP + Webserver) – med landingpage i STA-mode og navnet 'webserver'
+
+#include <WiFi.h>         // WiFi-styring (STA og AP mode)
+#include <WebServer.h>    // HTTP-server til ESP32
+#include <DNSServer.h>    // DNS-server til captive portal-effekt
+#include <Preferences.h>  // Gemmer netværksoplysninger i flash
+
+// Fremadrettet deklarationer af funktioner brugt før definition
+void connectToWiFi();
+void resetWiFiSettings();
+
+Preferences preferences;              // Gemmer SSID og password i NVS (flash)
+WebServer webserver(80);              // Webserver der kører på port 80
+const byte DNS_PORT = 53;             // DNS kører på standardporten 53
+DNSServer dnsServer;                  // DNS-server instans til redirect
+
+const char* apSSID = "5G_Router_74ECD8";        // SSID for ESP32 access point
+const char* apPassword = "8bDE2EA72265";        // Password for ESP32 access point
+
+// HTML-side til konfiguration (AP-mode)
+const char* htmlForm = R"rawliteral(
+<!DOCTYPE html>
+<html>
+  <body>
+    <h2>WiFi Konfiguration</h2>
+    <form action="/save" method="POST">
+      SSID: <input name="ssid"><br>
+      Password: <input name="password" type="password"><br>
+      <input type="submit" value="Tilslut">
+    </form>
+    <form action="/reset" method="GET">
+      <input type="submit" value="Nulstil WiFi">
+    </form>
+  </body>
+</html>
+)rawliteral";
+
+// HTML landing page (STA-mode)
+const char* htmlLanding = R"rawliteral(
+<!DOCTYPE html>
+<html>
+  <body>
+    <h2>ESP32 er forbundet</h2>
+    <p>Enheden er tilsluttet netværket og klar til brug.</p>
+  </body>
+</html>
+)rawliteral";
+
+// Behandler visning af konfigurationsformularen (GET /) i AP-mode
+void handleRoot() {
+  webserver.send(200, "text/html", htmlForm);
+}
+
+// Behandler visning af landing page (GET /) i STA-mode
+void handleLanding() {
+  webserver.send(200, "text/html", htmlLanding);
+}
+
+// Behandler formularafsendelse og forsøger at forbinde til nyt netværk (POST /save)
+void handleSave() {
+  String ssid = webserver.arg("ssid");
+  String password = webserver.arg("password");
+
+  preferences.putString("ssid", ssid);
+  preferences.putString("password", password);
+
+  delay(1000);
+  connectToWiFi();
+
+  String newIP = WiFi.localIP().toString();
+  String redirectPage =
+    "<html>
+"
+    "<body>
+"
+    "<h3>Forbinder til nyt netværk...</h3>
+"
+    "<p>Hvis forbindelsen lykkes, kan du besøge ESP32 på følgende IP:</p>
+"
+    "<p><strong>" + newIP + "</strong></p>
+"
+    "<p><a href='http://" + newIP + "'>Åbn ESP32</a></p>
+"
+    "<script>setTimeout(function() { window.location.href = 'http://" + newIP + "'; }, 7000);</script>
+"
+    "</body>
+"
+    "</html>
+";
+
+  webserver.send(200, "text/html", redirectPage);
+}
+
+// Behandler nulstilling af gemte credentials (GET /reset)
+void handleReset() {
+  resetWiFiSettings();
+  const char* htmlResponse = R"rawliteral(
+  <!DOCTYPE html>
+  <html>
+    <body>
+      <h2>WiFi-indstillinger nulstillet</h2>
+      <p>Gemte credentials er slettet.</p>
+      <p>Genstart enheden for at gå i konfigurationsmode.</p>
+      <p><a href="/">Tilbage</a></p>
+    </body>
+  </html>
+  )rawliteral";
+  webserver.send(200, "text/html", htmlResponse);
+}
+
+// Sletter gemte credentials fra NVS
+void resetWiFiSettings() {
+  preferences.begin("wifi", false);
+  preferences.remove("ssid");
+  preferences.remove("password");
+  preferences.end();
+  Serial.println("Gemte WiFi-indstillinger er slettet.");
+}

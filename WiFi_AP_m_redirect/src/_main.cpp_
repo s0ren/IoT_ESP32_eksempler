@@ -1,0 +1,182 @@
+// ESP32 WiFi Setup Portal (AP + Webserver) – med landingpage i STA-mode og navnet 'webserver'
+
+#include <WiFi.h>         // WiFi-styring (STA og AP mode)
+#include <WebServer.h>    // HTTP-server til ESP32
+#include <DNSServer.h>    // DNS-server til captive portal-effekt
+#include <Preferences.h>  // Gemmer netværksoplysninger i flash
+
+// Fremadrettet deklaration af funktion brugt før definition
+void connectToWiFi();
+void resetWiFiSettings();
+
+Preferences preferences;              // Gemmer SSID og password i NVS (flash)
+WebServer webserver(80);              // Webserver der kører på port 80
+const byte DNS_PORT = 53;             // DNS kører på standardporten 53
+DNSServer dnsServer;                  // DNS-server instans til redirect
+bool dnsServerActive = false;         // Holder styr på om DNS-serveren kører
+
+const char* apSSID = "ESP32_AP_CONFIG_smag";        // SSID for ESP32 access point
+const char* apPassword = "24.12.2025";        // Password for ESP32 access point
+
+// HTML-side til konfiguration (AP-mode)
+const char* htmlForm = R"rawliteral(
+<!DOCTYPE html>
+<html>
+  <body>
+    <h2>WiFi Konfiguration</h2>
+    <form action="/save" method="POST">
+      SSID: <input name="ssid"><br>
+      Password: <input name="password" type="password"><br>
+      <input type="submit" value="Tilslut">
+    </form>
+  </body>
+</html>
+)rawliteral";
+
+// HTML landing page (STA-mode)
+const char* htmlLanding = R"rawliteral(
+<!DOCTYPE html>
+<html>
+  <body>
+    <h2>ESP32 er forbundet</h2>
+    <p>Enheden er tilsluttet netværket og klar til brug.</p>
+  </body>
+</html>
+)rawliteral";
+
+// Behandler visning af konfigurationsformularen (GET /) i AP-mode
+void handleRoot() {
+  webserver.send(200, "text/html", htmlForm);
+}
+
+// Behandler visning af landing page (GET /) i STA-mode
+void handleLanding() {
+  webserver.send(200, "text/html", htmlLanding);
+}
+
+// Behandler formularafsendelse og forsøger at forbinde til nyt netværk (POST /save)
+void handleSave() {
+  String ssid = webserver.arg("ssid");
+  String password = webserver.arg("password");
+
+  preferences.putString("ssid", ssid);
+  preferences.putString("password", password);
+
+  delay(1000);
+  connectToWiFi();
+
+  String newIP = WiFi.localIP().toString();
+  String redirectPage =
+    "<html>\n"
+    "<body>\n"
+    "<h3>Forbinder til nyt netværk...</h3>\n"
+    "<p>Hvis forbindelsen lykkes, kan du besøge ESP32 på følgende IP:</p>\n"
+    "<p><strong>" + newIP + "</strong></p>\n"
+    "<p><a href='http://" + newIP + "'>Åbn ESP32</a></p>\n"
+    "<script>setTimeout(function() { window.location.href = 'http://" + newIP + "'; }, 7000);</script>\n"
+    "</body>\n"
+    "</html>\n";
+
+  webserver.send(200, "text/html", redirectPage);
+}
+
+// Starter access point og webserver hvis forbindelsen til kendt WiFi fejler
+void startAccessPoint() {
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(apSSID, apPassword);
+
+  IPAddress apIP = WiFi.softAPIP();
+  if (dnsServer.start(DNS_PORT, "*", apIP))
+    dnsServerActive = true;  // DNS-serveren kører i AP-mode
+
+  webserver.on("/", handleRoot);
+  webserver.on("/save", HTTP_POST, handleSave);
+  webserver.onNotFound([]() {
+    Serial.println("[INFO] Forespørgsel til ukendt sti: " + webserver.uri());
+    webserver.send(404, "text/plain", "404: Ikke fundet");
+  });
+  webserver.begin();
+
+  Serial.println("AP + Webserver startet på: " + apIP.toString());
+}
+
+// Starter landing page webserver hvis STA-forbindelse lykkes
+void startLandingPage() {
+  dnsServer.stop();  // Stop DNS-serveren i STA-mode
+  dnsServerActive = false;  // DNS-serveren kører ikke i STA-mode
+  webserver.close();  // Lukker eksisterende webserver
+  // webserver.stop();  // Stop webserveren
+  // webserver = WebServer(80);  // Opretter ny webserver instans
+  // WiFi.softAPdisconnect(false);  // Slukker access point
+  WiFi.softAPdisconnect(true);  // Slukker access point
+  webserver.on("/", handleLanding);
+  webserver.onNotFound([]() {
+    Serial.println("[INFO] Forespørgsel til ukendt sti: " + webserver.uri());
+    webserver.send(404, "text/plain", "404: Ikke fundet");
+  });
+  webserver.begin();
+  Serial.println("Landing page tilgængelig på: " + WiFi.localIP().toString());
+}
+
+// Forsøger at forbinde til WiFi ud fra gemte credentials
+void connectToWiFi() {
+  String ssid = preferences.getString("ssid", "");
+  String password = preferences.getString("password", "");
+
+  if (ssid == "") return;
+
+  WiFi.begin(ssid.c_str(), password.c_str());
+
+  Serial.print("Forbinder til ");
+  Serial.println(ssid);
+
+  int retry = 0;
+  while (WiFi.status() != WL_CONNECTED && retry < 20) {
+    delay(500);
+    Serial.print(".");
+    retry++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Forbundet! IP: " + WiFi.localIP().toString());
+  } else {
+    Serial.println("Kunne ikke forbinde - holder AP aktiv.");
+  }
+}
+
+// Setup-funktion – starter WiFi og evt. access point
+void setup() {
+  Serial.begin(9600);
+  preferences.begin("wifi", false);
+
+  WiFi.mode(WIFI_STA);
+  String ssid = preferences.getString("ssid", "");
+  String password = preferences.getString("password", "");
+
+  if (ssid != "") {
+    WiFi.begin(ssid.c_str(), password.c_str());
+    Serial.println("Prøver at forbinde til kendt WiFi...");
+
+    unsigned long startAttemptTime = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
+      delay(500);
+      Serial.print(".");
+    }
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi fejlede. Starter AP...");
+    startAccessPoint();
+  } else {
+    Serial.println("Forbundet som klient. IP: " + WiFi.localIP().toString());
+    startLandingPage();
+  }
+}
+
+// Hovedloop – håndterer DNS-forespørgsler og HTTP-request
+void loop() {
+  if (dnsServerActive) {
+    dnsServer.processNextRequest();
+  }
+  webserver.handleClient();
+}

@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    <h3>Forbinder til nyt netværk...</h3>
+    <p>Hvis forbindelsen lykkes, kan du besøge ESP32 på følgende IP:</p>
+    <p><strong>{{IP}}</strong></p>
+    <p><a href='http://{{IP}}'>Åbn ESP32</a></p>
+    <script>
+      setTimeout(function() {
+        window.location.href = 'http://{{IP}}';
+      }, 7000);
+    </script>
+  </body>
+</html>
